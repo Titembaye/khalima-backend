@@ -114,21 +114,61 @@ class UserProfileSerializer(serializers.ModelSerializer):
 class UserRegistrationSerializer(serializers.ModelSerializer):
     """Serializer for user registration."""
     
-    password = serializers.CharField(write_only=True, min_length=8)
-    password_confirm = serializers.CharField(write_only=True)
+    password = serializers.CharField(
+        write_only=True, 
+        min_length=8,
+        error_messages={
+            'min_length': 'Le mot de passe doit contenir au moins 8 caractères.',
+            'required': 'Le mot de passe est requis.',
+            'blank': 'Le mot de passe ne peut pas être vide.'
+        }
+    )
+    password_confirm = serializers.CharField(
+        write_only=True,
+        error_messages={
+            'required': 'La confirmation du mot de passe est requise.',
+            'blank': 'La confirmation du mot de passe ne peut pas être vide.'
+        }
+    )
     role = serializers.ChoiceField(
         choices=UserProfile.ROLE_CHOICES,
         default='annotator'
+    )
+    username = serializers.CharField(
+        error_messages={
+            'required': "Le nom d'utilisateur est requis.",
+            'blank': "Le nom d'utilisateur ne peut pas être vide.",
+            'unique': "Un utilisateur avec ce nom d'utilisateur existe déjà."
+        }
+    )
+    email = serializers.EmailField(
+        error_messages={
+            'required': 'L\'adresse email est requise.',
+            'invalid': 'Veuillez saisir une adresse email valide.',
+            'unique': 'Un utilisateur avec cette adresse email existe déjà.'
+        }
     )
     
     class Meta:
         model = User
         fields = ['username', 'email', 'first_name', 'last_name', 'password', 'password_confirm', 'role']
     
+    def validate_username(self, value):
+        """Validate username uniqueness with French message."""
+        if User.objects.filter(username=value).exists():
+            raise serializers.ValidationError("Un utilisateur avec ce nom d'utilisateur existe déjà.")
+        return value
+    
+    def validate_email(self, value):
+        """Validate email uniqueness with French message."""
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Un utilisateur avec cette adresse email existe déjà.")
+        return value
+    
     def validate(self, attrs):
         """Validate password confirmation."""
         if attrs['password'] != attrs['password_confirm']:
-            raise serializers.ValidationError("Passwords do not match.")
+            raise serializers.ValidationError("Les mots de passe ne correspondent pas.")
         return attrs
     
     def create(self, validated_data):
@@ -144,8 +184,19 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
 class LoginSerializer(serializers.Serializer):
     """Serializer for user login."""
     
-    username = serializers.CharField()
-    password = serializers.CharField(write_only=True)
+    username = serializers.CharField(
+        error_messages={
+            'required': "Le nom d'utilisateur est requis.",
+            'blank': "Le nom d'utilisateur ne peut pas être vide."
+        }
+    )
+    password = serializers.CharField(
+        write_only=True,
+        error_messages={
+            'required': 'Le mot de passe est requis.',
+            'blank': 'Le mot de passe ne peut pas être vide.'
+        }
+    )
     
     def validate(self, attrs):
         """Validate user credentials."""
@@ -155,12 +206,12 @@ class LoginSerializer(serializers.Serializer):
         if username and password:
             user = authenticate(username=username, password=password)
             if not user:
-                raise serializers.ValidationError("Invalid credentials.")
+                raise serializers.ValidationError("Nom d'utilisateur ou mot de passe incorrect.")
             if not user.is_active:
-                raise serializers.ValidationError("User account is disabled.")
+                raise serializers.ValidationError("Ce compte utilisateur est désactivé.")
             attrs['user'] = user
         else:
-            raise serializers.ValidationError("Must include username and password.")
+            raise serializers.ValidationError("Le nom d'utilisateur et le mot de passe sont requis.")
         
         return attrs
 

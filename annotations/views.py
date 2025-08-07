@@ -631,7 +631,23 @@ class LoginView(APIView):
                 }
             })
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Format errors for frontend
+        error_messages = []
+        for field, errors in serializer.errors.items():
+            if isinstance(errors, list):
+                for error in errors:
+                    if field == 'non_field_errors':
+                        error_messages.append(str(error))
+                    else:
+                        error_messages.append(str(error))
+            else:
+                error_messages.append(str(errors))
+        
+        error_message = '. '.join(error_messages)
+        return Response(
+            {'error': error_message},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 
 class LogoutView(APIView):
@@ -692,7 +708,23 @@ class RegisterView(APIView):
                     status=status.HTTP_500_INTERNAL_SERVER_ERROR
                 )
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        # Format errors for frontend
+        error_messages = []
+        for field, errors in serializer.errors.items():
+            if isinstance(errors, list):
+                for error in errors:
+                    if field == 'non_field_errors':
+                        error_messages.append(str(error))
+                    else:
+                        error_messages.append(f"{field}: {str(error)}")
+            else:
+                error_messages.append(f"{field}: {str(errors)}")
+        
+        error_message = '. '.join(error_messages)
+        return Response(
+            {'error': error_message},
+            status=status.HTTP_400_BAD_REQUEST
+        )
 
 
 class UserProfileView(APIView):
