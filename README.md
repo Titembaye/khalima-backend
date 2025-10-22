@@ -1,176 +1,179 @@
-# Khalima — Backend API pour application d'annotation bilingue
+# Khalima Backend API
 
-Ce backend Django REST Framework implémente l'API pour Khalima, plateforme d'annotation bilingue (Français ↔ Saar) avec support d'images.
+Khalima est une initiative de Data4Chad visant à créer un système d'annotation bilingue pour faciliter la traduction et la préservation des langues tchadiennes, en commençant par le Saar.
 
-## Repositories recommandés
-- khalima-backend (ce dépôt)
-- khalima-frontend
-- khalima-docs (optionnel)
+## À Propos
 
-## Fonctionnalités
+Cette API REST Django constitue le backend du projet Khalima. Elle permet de :
+- Gérer les annotations bilingues de textes
+- Supporter plusieurs langues (Saar, Français, Arabe, Anglais)
+- Stocker et organiser les traductions
+- Faciliter la collaboration entre traducteurs
 
-### Endpoints API Principaux
+### Objectifs
+- Préserver les langues tchadiennes par la numérisation
+- Créer une base de données de traductions
+- Faciliter l'apprentissage des langues locales
+- Promouvoir la diversité linguistique
 
-- **POST /api/annotations/text** : Créer une annotation textuelle (français → saar)
-- **POST /api/annotations/image** : Créer une annotation pour une image
-- **GET /api/annotations** : Lister les annotations avec filtres (type, langue, statut)
-- **GET /api/dataset/random** : Récupérer un texte français aléatoire pour annotation
-- **POST /api/dataset/import** : Importer un dataset français (CSV/JSON)
-- **GET /api/dataset/export** : Exporter les annotations (JSON/CSV)
-- **POST /api/validation/:id** : Valider une annotation
+### Technologies
+- Django REST Framework pour l'API
+- PostgreSQL pour le stockage
+- Redis & Celery pour les tâches asynchrones
+- Documentation OpenAPI/Swagger
 
-### Authentification et Autorisation
+## Prérequis
 
-- **POST /api/auth/login** : Connexion utilisateur
-- **POST /api/auth/logout** : Déconnexion utilisateur
-- **POST /api/auth/register** : Inscription utilisateur
-- **GET /api/auth/profile** : Profil utilisateur
-
-### Gestion des Langues
-
-- **GET /api/languages** : Liste des langues disponibles
+- Python 3.11+
+- PostgreSQL
+- Redis (pour Celery)
 
 ## Installation
 
-1. **Installer les dépendances** :
-```bash
+1. **Créer l'environnement virtuel**
+```powershell
+python -m venv .venv
+.\.venv\Scripts\activate
+```
+
+2. **Installer les dépendances**
+```powershell
 pip install -r requirements.txt
 ```
 
-2. **Configuration** :
-```bash
-cp .env.example .env
-# Éditer .env avec vos paramètres
+3. **Configuration**
+
+Créer un fichier `.env` à la racine :
+```env
+DEBUG=True
+SECRET_KEY=your-secret-key
+DATABASE_URL=postgres://user:password@localhost:5432/khalima
+REDIS_URL=redis://localhost:6379/0
+ALLOWED_HOSTS=localhost,127.0.0.1
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-3. **Migrations de base de données** :
-```bash
-python manage.py makemigrations
+4. **Migrations**
+```powershell
 python manage.py migrate
 ```
 
-4. **Créer les langues initiales** :
-```bash
+5. **Données initiales**
+```powershell
 python manage.py setup_languages
 ```
 
-5. **Créer un superutilisateur** :
-```bash
-python manage.py createsuperuser
+## Documentation API
+
+La documentation API utilise drf-spectacular avec 3 interfaces :
+
+- Swagger UI : `/api/docs/` - Interface interactive
+- ReDoc : `/api/redoc/` - Documentation statique
+- Schema OpenAPI : `/api/schema/` - Schéma brut
+
+### Configuration Swagger
+
+```python
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Khalima API',
+    'DESCRIPTION': 'API for managing annotations and translations',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+}
 ```
 
-6. **Lancer le serveur** :
-```bash
+### Endpoints Principaux
+
+- `/api/annotations/` - CRUD des annotations
+- `/api/languages/` - Liste des langues supportées
+- `/api/auth/` - Authentification
+
+## Développement
+
+1. **Lancer le serveur**
+```powershell
 python manage.py runserver
 ```
 
-## Architecture
-
-### Modèles de Données
-
-- **Language** : Langues supportées (français, saar, etc.)
-- **TextDataset** : Textes sources à annoter
-- **TextAnnotation** : Annotations textuelles
-- **Image** : Images à annoter
-- **ImageAnnotation** : Annotations d'images
-- **UserProfile** : Profils utilisateurs avec rôles
-
-### Rôles Utilisateurs
-
-- **annotator** : Peut créer des annotations
-- **reviewer** : Peut valider/rejeter des annotations
-- **admin** : Accès complet
-
-### Sécurité
-
-- Authentification par token
-- Permissions basées sur les rôles
-- Validation des données d'entrée
-- Protection CORS
-- Limitation du taux de requêtes
-
-### Gestion des Erreurs
-
-- Logging complet des erreurs
-- Réponses d'erreur standardisées
-- Gestion des connexions instables
-- Transactions atomiques pour l'intégrité des données
-
-## Utilisation
-
-### Authentification
-
-```bash
-# Inscription
-curl -X POST http://localhost:8000/api/auth/register/ \
-  -H "Content-Type: application/json" \
-  -d '{"username": "user", "password": "pass123", "email": "user@example.com"}'
-
-# Connexion
-curl -X POST http://localhost:8000/api/auth/login/ \
-  -H "Content-Type: application/json" \
-  -d '{"username": "user", "password": "pass123"}'
+2. **Lancer Celery**
+```powershell
+celery -A khalima worker -l info
 ```
 
-### Créer une Annotation Textuelle
-
-```bash
-curl -X POST http://localhost:8000/api/annotations/text/ \
-  -H "Authorization: Token YOUR_TOKEN" \
-  -H "Content-Type: application/json" \
-  -d '{
-    "dataset": "dataset-uuid",
-    "target_text": "Hallo",
-    "source_language": 1,
-    "target_language": 2,
-    "status": "draft"
-  }'
-```
-
-### Importer un Dataset
-
-```bash
-curl -X POST http://localhost:8000/api/dataset/import/ \
-  -H "Authorization: Token YOUR_TOKEN" \
-  -F "file=@dataset.csv" \
-  -F "language_code=french" \
-  -F "file_format=csv"
-```
-
-### Exporter les Annotations
-
-```bash
-curl -X GET "http://localhost:8000/api/dataset/export/?format=json&type=text" \
-  -H "Authorization: Token YOUR_TOKEN"
-```
-
-## Tests
-
-```bash
+3. **Tests**
+```powershell
 python manage.py test
 ```
 
-## Extensibilité
+## Configuration Avancée
 
-Le système est conçu pour être facilement extensible :
+### Sécurité et Authentification
+```python
+REST_FRAMEWORK = {
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'rest_framework.authentication.TokenAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': [
+        'rest_framework.permissions.IsAuthenticated',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'anon': '100/hour',
+        'user': '1000/hour'
+    }
+}
+```
 
-- **Nouvelles langues** : Ajouter via l'admin Django ou la commande `setup_languages`
-- **Nouveaux types d'annotations** : Étendre les modèles existants
-- **Intégrations externes** : Utiliser les webhooks et l'API REST
-- **Traitement en arrière-plan** : Celery configuré pour les tâches lourdes
+### Gestion des Fichiers
+- Taille max upload : 10MB
+- Support des fichiers media et statiques
+- Stockage sécurisé dans `media/` et `staticfiles/`
 
-## Monitoring et Logs
+### Logging
+Configuration dans `logs/`:
+- `django.log` - Erreurs et événements importants
+- Console - Informations de développement
+- Format détaillé avec timestamp et niveau de log
 
-- Logs détaillés dans `logs/django.log`
-- Interface d'administration Django sur `/admin/`
-- Métriques API via Django REST Framework
+### Internationalisation
+```python
+LANGUAGE_CODE = 'fr'
+TIME_ZONE = 'UTC'
+USE_I18N = True
+USE_TZ = True
+```
 
-## Production
+## Structure du Projet
+```
+khalima-backend/
+├── annotations/           # App principale
+├── media/                # Fichiers uploadés
+├── staticfiles/          # Fichiers statiques
+├── logs/                 # Logs d'application
+├── manage.py            
+├── requirements.txt      # Dépendances
+└── .env                 # Configuration locale
+```
 
-Pour le déploiement en production :
+## Contribution
 
-1. Configurer PostgreSQL
-2. Utiliser Redis pour Celery
-3. Configurer un serveur web (Nginx + Gunicorn)
-4. Activer HTTPS
-5. Configurer les variables d'environnement de production
+1. Forker le projet
+2. Créer une branche (`git checkout -b feature/nouvelle_fonctionnalite`)
+3. Commit (`git commit -m 'Ajout nouvelle fonctionnalité'`)
+4. Push (`git push origin feature/nouvelle_fonctionnalite`)
+5. Pull Request
+
+## Contact & Communauté
+
+Ce projet est maintenu par la communauté Data4Chad.
+
+- **Discord**: [Rejoindre le serveur Khalima](lien_discord)
+- **Email**: data4chad@gmail.org
+- **GitHub Discussions**: Pour les questions techniques et suggestions
+- **Issues**: Pour signaler des bugs ou proposer des fonctionnalités
+
+Pour rejoindre notre communauté, merci de nous contacter via Discord ou email.
+
+### Code de Conduite
+
+Nous nous engageons à maintenir une communauté bienveillante et inclusive. Tous les contributeurs doivent respecter notre code de conduite.

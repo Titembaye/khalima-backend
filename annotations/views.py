@@ -22,6 +22,7 @@ from rest_framework.pagination import PageNumberPagination
 from django_filters.rest_framework import DjangoFilterBackend
 from django_filters import rest_framework as filters
 import pandas as pd
+from drf_spectacular.utils import extend_schema
 
 from .models import (
     Language, TextDataset, TextAnnotation,
@@ -151,6 +152,10 @@ class AnnotationListView(ListAPIView):
     permission_classes = [permissions.IsAuthenticated]
     pagination_class = StandardResultsSetPagination
     
+    @extend_schema(
+        description='Liste toutes les annotations.',
+        responses={200: 'Liste des annotations réussie.'}
+    )
     def get(self, request, *args, **kwargs):
         """Get combined list of text and image annotations."""
         try:
