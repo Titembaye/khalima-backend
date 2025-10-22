@@ -1,6 +1,11 @@
-# Backend API pour Application d'Annotation Bilingue
+# Khalima — Backend API pour application d'annotation bilingue
 
-Ce backend Django REST Framework implémente une API complète pour l'annotation bilingue français-saar avec support d'images.
+Ce backend Django REST Framework implémente l'API pour Khalima, plateforme d'annotation bilingue (Français ↔ Saar) avec support d'images.
+
+## Repositories recommandés
+- khalima-backend (ce dépôt)
+- khalima-frontend
+- khalima-docs (optionnel)
 
 ## Fonctionnalités
 
