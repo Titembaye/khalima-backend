@@ -2,6 +2,7 @@
 import csv
 import io
 import logging
+import hashlib
 from django.db import transaction
 from django.http import HttpResponse
 from django.utils import timezone
@@ -19,6 +20,7 @@ from .serializers import (
     ValidationSerializer, DatasetImportSerializer,
 )
 from .filters import TextAnnotationFilter, ImageAnnotationFilter
+from users.permissions import IsAdmin, IsReviewer
 
 logger = logging.getLogger(__name__)
 
@@ -146,8 +148,13 @@ class RandomTextDatasetView(APIView):
         return Response(TextDatasetSerializer(available.order_by('?').first()).data)
 
 
+def _text_hash(text):
+    return hashlib.md5(text.strip().lower().encode('utf-8')).hexdigest()
+
+
 class DatasetImportView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    """Import CSV/JSON with duplicate detection. Admin only."""
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def post(self, request):
         serializer = DatasetImportSerializer(data=request.data)
@@ -157,54 +164,156 @@ class DatasetImportView(APIView):
         file = serializer.validated_data['file']
         language_code = serializer.validated_data['language_code']
         file_format = serializer.validated_data['file_format']
-        language = Language.objects.get(code=language_code)
-        imported_count, errors = 0, []
+        skip_duplicates = request.data.get('skip_duplicates', 'true').lower() == 'true'
+
+        try:
+            language = Language.objects.get(code=language_code)
+        except Language.DoesNotExist:
+            return Response(
+                {'error': f"Language '{language_code}' not found."},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
         try:
             with transaction.atomic():
                 if file_format == 'csv':
-                    imported_count, errors = self._import_csv(file, language)
+                    result = self._import_csv(file, language, skip_duplicates)
                 else:
-                    imported_count, errors = self._import_json(file, language)
+                    result = self._import_json(file, language, skip_duplicates)
         except Exception as e:
             logger.error(f"Dataset import failed: {e}")
             return Response({'error': 'Failed to import dataset.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        resp = {'imported_count': imported_count, 'message': f'Successfully imported {imported_count} texts.'}
-        if errors:
-            resp['errors'] = errors
-        logger.info(f"Dataset import: {imported_count} texts by {request.user.username}")
-        return Response(resp, status=status.HTTP_201_CREATED)
+        msg = f'Successfully imported {result["imported_count"]} texts.'
+        if result['duplicate_count']:
+            msg += f' {result["duplicate_count"]} duplicates skipped.'
+        logger.info(f"Dataset import: {result['imported_count']} texts by {request.user.username}")
+        return Response({**result, 'message': msg}, status=status.HTTP_201_CREATED)
 
-    def _import_csv(self, file, language):
+    def _existing_hashes(self, language):
+        return {_text_hash(t) for t in TextDataset.objects.filter(language=language).values_list('text', flat=True)}
+
+    def _import_csv(self, file, language, skip_duplicates):
         import pandas as pd
-        imported_count, errors = 0, []
+        imported_count = duplicate_count = 0
+        errors = []
         df = pd.read_csv(file)
         if 'text' not in df.columns:
             raise ValueError("CSV must contain 'text' column")
+        existing = self._existing_hashes(language) if skip_duplicates else set()
+        seen = set()
         for index, row in df.iterrows():
             text = str(row['text']).strip()
-            if not text:
-                errors.append(f"Row {index + 1}: Empty text")
+            if not text or len(text) < 2:
+                errors.append(f"Ligne {index + 1}: Texte vide ou trop court")
                 continue
-            tags = [t.strip() for t in str(row['tags']).split(',')] if 'tags' in df.columns and pd.notna(row.get('tags')) else []
-            TextDataset.objects.create(text=text, language=language, tags=tags)
+            if len(text) > 5000:
+                errors.append(f"Ligne {index + 1}: Texte trop long (max 5000)")
+                continue
+            h = _text_hash(text)
+            if skip_duplicates and (h in existing or h in seen):
+                duplicate_count += 1
+                continue
+            seen.add(h)
+            tags = []
+            if 'tags' in df.columns and pd.notna(row.get('tags')):
+                tags = [t.strip() for t in str(row['tags']).split(',') if t.strip()]
+            for col, prefix in (('difficulty', 'difficulty'), ('domain', 'domain')):
+                if col in df.columns and pd.notna(row.get(col)):
+                    val = str(row[col]).strip().lower()
+                    if val:
+                        tags.append(f'{prefix}:{val}')
+            TextDataset.objects.create(text=text, language=language, tags=tags[:10])
             imported_count += 1
-        return imported_count, errors
+        return {'imported_count': imported_count, 'duplicate_count': duplicate_count, 'errors': errors[:10]}
 
-    def _import_json(self, file, language):
-        imported_count, errors = 0, []
+    def _import_json(self, file, language, skip_duplicates):
+        imported_count = duplicate_count = 0
+        errors = []
         data = json.load(file)
         if not isinstance(data, list):
             raise ValueError("JSON must contain an array of objects")
+        existing = self._existing_hashes(language) if skip_duplicates else set()
+        seen = set()
         for index, item in enumerate(data):
-            text = item.get('text', '').strip()
-            if not text:
-                errors.append(f"Item {index + 1}: Missing or empty text")
+            if not isinstance(item, dict):
+                errors.append(f"Élément {index + 1}: Doit être un objet")
                 continue
-            tags = item.get('tags', []) if isinstance(item.get('tags'), list) else []
-            TextDataset.objects.create(text=text, language=language, tags=tags)
+            text = str(item.get('text', '')).strip()
+            if not text or len(text) < 2:
+                errors.append(f"Élément {index + 1}: Texte vide ou trop court")
+                continue
+            if len(text) > 5000:
+                errors.append(f"Élément {index + 1}: Texte trop long (max 5000)")
+                continue
+            h = _text_hash(text)
+            if skip_duplicates and (h in existing or h in seen):
+                duplicate_count += 1
+                continue
+            seen.add(h)
+            tags = item.get('tags', [])
+            if not isinstance(tags, list):
+                tags = [t.strip() for t in str(tags).split(',') if t.strip()] if isinstance(tags, str) else []
+            tags = [t for t in tags if isinstance(t, str) and t.strip()]
+            for key, prefix in (('difficulty', 'difficulty'), ('domain', 'domain')):
+                val = str(item.get(key, '')).strip().lower()
+                if val:
+                    tags.append(f'{prefix}:{val}')
+            TextDataset.objects.create(text=text, language=language, tags=tags[:10])
             imported_count += 1
-        return imported_count, errors
+        return {'imported_count': imported_count, 'duplicate_count': duplicate_count, 'errors': errors[:10]}
+
+
+class DatasetPreviewView(APIView):
+    """Preview first 5 rows of a file before importing. Admin only."""
+    permission_classes = [permissions.IsAuthenticated, IsAdmin]
+
+    def post(self, request):
+        serializer = DatasetImportSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        file = serializer.validated_data['file']
+        file_format = serializer.validated_data['file_format']
+        preview, errors, total_items = [], [], 0
+
+        try:
+            if file_format == 'csv':
+                import pandas as pd
+                df = pd.read_csv(file)
+                total_items = len(df)
+                if 'text' not in df.columns:
+                    errors.append("Missing required column 'text'")
+                for i, row in df.head(5).iterrows():
+                    text = str(row.get('text', ''))
+                    preview.append({
+                        'row': i + 1,
+                        'text': text[:200] + ('...' if len(text) > 200 else ''),
+                        'tags': str(row.get('tags', '')),
+                        'difficulty': str(row.get('difficulty', '')),
+                        'domain': str(row.get('domain', '')),
+                    })
+                return Response({'preview': preview, 'total_items': total_items,
+                                 'errors': errors, 'columns': list(df.columns)})
+            else:
+                data = json.load(file)
+                if not isinstance(data, list):
+                    errors.append("JSON must contain an array of objects")
+                else:
+                    total_items = len(data)
+                    for i, item in enumerate(data[:5]):
+                        if isinstance(item, dict):
+                            text = str(item.get('text', ''))
+                            preview.append({
+                                'row': i + 1,
+                                'text': text[:200] + ('...' if len(text) > 200 else ''),
+                                'tags': item.get('tags', []),
+                                'difficulty': str(item.get('difficulty', '')),
+                                'domain': str(item.get('domain', '')),
+                            })
+                return Response({'preview': preview, 'total_items': total_items, 'errors': errors})
+        except Exception as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class DatasetExportView(APIView):
@@ -295,19 +404,12 @@ class DatasetExportJsonlView(APIView):
 
 
 class ValidationView(APIView):
-    permission_classes = [permissions.IsAuthenticated]
+    permission_classes = [permissions.IsAuthenticated, IsReviewer]
 
     def post(self, request, annotation_id):
         serializer = ValidationSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-        user_profile = getattr(request.user, 'userprofile', None)
-        if not user_profile or user_profile.role not in ('reviewer', 'admin'):
-            return Response(
-                {'error': 'You do not have permission to validate annotations.'},
-                status=status.HTTP_403_FORBIDDEN,
-            )
 
         annotation = None
         annotation_type = None
