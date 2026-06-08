@@ -3,7 +3,7 @@
     name: data4chad-backend
     env: python
     buildCommand: pip install -r requirements.txt && python manage.py collectstatic --no-input && python manage.py migrate && python manage.py setup_languages
-    startCommand: gunicorn khalima.wsgi:application
+    startCommand: gunicorn khalima.wsgi:application --workers 1 --bind 0.0.0.0:$PORT
     envVars:
       - key: DJANGO_SETTINGS_MODULE
         value: khalima.settings.prod
