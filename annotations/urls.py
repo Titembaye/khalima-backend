@@ -15,6 +15,6 @@ urlpatterns = [
     path('dataset/preview/', views.DatasetPreviewView.as_view(), name='dataset-preview'),
     path('dataset/export/', views.DatasetExportView.as_view(), name='dataset-export'),
     path('dataset/export/jsonl/', views.DatasetExportJsonlView.as_view(), name='dataset-export-jsonl'),
-    path('validation/<uuid:annotation_id>/', views.ValidationView.as_view(), name='validate-annotation'),
+    path('validation/<int:annotation_id>/', views.ValidationView.as_view(), name='validate-annotation'),
     path('languages/', views.LanguageListView.as_view(), name='language-list'),
 ]

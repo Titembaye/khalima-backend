@@ -12,14 +12,18 @@ class Language(models.Model):
 
 
 class TextDataset(models.Model):
+    GRANULARITY_CHOICES = [('sentence', 'Phrase'), ('word', 'Mot')]
+
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     text = models.TextField()
     language = models.ForeignKey(Language, on_delete=models.CASCADE)
     created_at = models.DateTimeField(auto_now_add=True)
     tags = models.JSONField(default=list)
+    granularity = models.CharField(max_length=10, choices=GRANULARITY_CHOICES, default='sentence')
+    context = models.TextField(blank=True, default='')
 
     def __str__(self):
-        return f"{self.text} ({self.language.code})"
+        return f"{self.text} ({self.language.code}, {self.granularity})"
 
 
 class TextAnnotation(models.Model):
@@ -41,6 +45,7 @@ class TextAnnotation(models.Model):
     updated_at = models.DateTimeField(auto_now=True)
     tags = models.JSONField(default=list)
     validation_history = models.JSONField(default=list)
+    alternatives = models.JSONField(default=list, blank=True)
 
     def __str__(self):
         return f"{self.dataset.text} -> {self.target_text}"

@@ -13,7 +13,7 @@ class TextDatasetSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = TextDataset
-        fields = ['id', 'text', 'language', 'language_name', 'created_at', 'tags']
+        fields = ['id', 'text', 'language', 'language_name', 'created_at', 'tags', 'granularity', 'context']
         read_only_fields = ['id', 'created_at']
 
 
@@ -26,7 +26,7 @@ class TextAnnotationSerializer(serializers.ModelSerializer):
     class Meta:
         model = TextAnnotation
         fields = [
-            'id', 'dataset', 'dataset_text', 'target_text',
+            'id', 'dataset', 'dataset_text', 'target_text', 'alternatives',
             'source_language', 'source_language_name',
             'target_language', 'target_language_name',
             'annotator', 'annotator_username', 'status',

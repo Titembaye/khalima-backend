@@ -3,7 +3,9 @@ import csv
 import io
 import logging
 import hashlib
+from datetime import timedelta
 from django.db import transaction
+from django.db.models import Count, Q
 from django.http import HttpResponse
 from django.utils import timezone
 from rest_framework import viewsets, status, permissions
@@ -117,34 +119,120 @@ class AnnotationStatsView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
-        def counts(model):
-            return {
-                'total': model.objects.count(),
-                'draft': model.objects.filter(status='draft').count(),
-                'pending': model.objects.filter(status='pending').count(),
-                'validated': model.objects.filter(status='validated').count(),
-                'rejected': model.objects.filter(status='rejected').count(),
-            }
-        text = counts(TextAnnotation)
-        image = counts(ImageAnnotation)
-        return Response({'text': text, 'image': image, 'total': text['total'] + image['total']})
+        PERIODS = {'1d': 1, '3d': 3, '7d': 7, '30d': 30}
+        period_key = request.query_params.get('period', 'all')
+        since = None
+        if period_key in PERIODS:
+            since = timezone.now() - timedelta(days=PERIODS[period_key])
+
+        def base_qs(model):
+            qs = model.objects.all()
+            if since:
+                qs = qs.filter(created_at__gte=since)
+            return qs
+
+        def counts(qs):
+            return qs.aggregate(
+                total=Count('id'),
+                draft=Count('id', filter=Q(status='draft')),
+                pending=Count('id', filter=Q(status='pending')),
+                validated=Count('id', filter=Q(status='validated')),
+                rejected=Count('id', filter=Q(status='rejected')),
+            )
+
+        text = counts(base_qs(TextAnnotation))
+        image = counts(base_qs(ImageAnnotation))
+
+        response = {'text': text, 'image': image, 'total': (text['total'] or 0) + (image['total'] or 0)}
+
+        profile = getattr(request.user, 'userprofile', None)
+        if profile and profile.role in ('admin', 'reviewer'):
+            text_by_user = (
+                base_qs(TextAnnotation)
+                .values('annotator__username', 'annotator__first_name', 'annotator__last_name')
+                .annotate(
+                    total=Count('id'),
+                    draft=Count('id', filter=Q(status='draft')),
+                    pending=Count('id', filter=Q(status='pending')),
+                    validated=Count('id', filter=Q(status='validated')),
+                    rejected=Count('id', filter=Q(status='rejected')),
+                )
+                .order_by('-total')
+            )
+            image_by_user = (
+                base_qs(ImageAnnotation)
+                .values('annotator__username', 'annotator__first_name', 'annotator__last_name')
+                .annotate(
+                    total=Count('id'),
+                    draft=Count('id', filter=Q(status='draft')),
+                    pending=Count('id', filter=Q(status='pending')),
+                    validated=Count('id', filter=Q(status='validated')),
+                    rejected=Count('id', filter=Q(status='rejected')),
+                )
+                .order_by('-total')
+            )
+
+            users_map = {}
+            for row in text_by_user:
+                uname = row['annotator__username'] or 'inconnu'
+                users_map.setdefault(uname, {
+                    'username': uname,
+                    'first_name': row['annotator__first_name'] or '',
+                    'last_name': row['annotator__last_name'] or '',
+                    'text': {'total': 0, 'draft': 0, 'pending': 0, 'validated': 0, 'rejected': 0},
+                    'image': {'total': 0, 'draft': 0, 'pending': 0, 'validated': 0, 'rejected': 0},
+                })
+                users_map[uname]['text'] = {k: row[k] for k in ('total', 'draft', 'pending', 'validated', 'rejected')}
+
+            for row in image_by_user:
+                uname = row['annotator__username'] or 'inconnu'
+                users_map.setdefault(uname, {
+                    'username': uname,
+                    'first_name': row['annotator__first_name'] or '',
+                    'last_name': row['annotator__last_name'] or '',
+                    'text': {'total': 0, 'draft': 0, 'pending': 0, 'validated': 0, 'rejected': 0},
+                    'image': {'total': 0, 'draft': 0, 'pending': 0, 'validated': 0, 'rejected': 0},
+                })
+                users_map[uname]['image'] = {k: row[k] for k in ('total', 'draft', 'pending', 'validated', 'rejected')}
+
+            by_user = sorted(
+                [
+                    {**u, 'total': u['text']['total'] + u['image']['total']}
+                    for u in users_map.values()
+                ],
+                key=lambda x: -x['total'],
+            )
+            response['by_user'] = by_user
+
+        return Response(response)
 
 
 class RandomTextDatasetView(APIView):
     permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
+        granularity = request.query_params.get('granularity', 'sentence')
+        source_lang = request.query_params.get('source_language', 'french')
+
         try:
-            french_language = Language.objects.get(code='french')
+            language = Language.objects.get(code=source_lang)
         except Language.DoesNotExist:
+            return Response({'error': f"Langue '{source_lang}' introuvable."}, status=status.HTTP_404_NOT_FOUND)
+
+        annotated_ids = TextAnnotation.objects.filter(
+            annotator=request.user
+        ).values_list('dataset_id', flat=True)
+
+        available = TextDataset.objects.filter(
+            language=language,
+            granularity=granularity,
+        ).exclude(id__in=annotated_ids)
+
+        if not available.exists():
             return Response(
-                {'error': 'French language not configured in the system.'},
+                {'message': 'Aucun texte disponible pour cette combinaison.'},
                 status=status.HTTP_404_NOT_FOUND,
             )
-        annotated_ids = TextAnnotation.objects.values_list('dataset_id', flat=True)
-        available = TextDataset.objects.filter(language=french_language).exclude(id__in=annotated_ids)
-        if not available.exists():
-            return Response({'message': 'No unannotated French texts available.'}, status=status.HTTP_404_NOT_FOUND)
         return Response(TextDatasetSerializer(available.order_by('?').first()).data)
 
 
@@ -157,74 +245,108 @@ class DatasetImportView(APIView):
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def post(self, request):
-        serializer = DatasetImportSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'Aucun fichier fourni.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        file = serializer.validated_data['file']
-        language_code = serializer.validated_data['language_code']
-        file_format = serializer.validated_data['file_format']
-        skip_duplicates = request.data.get('skip_duplicates', 'true').lower() == 'true'
+        name = file.name.lower()
+        if name.endswith('.csv'):
+            file_format = 'csv'
+        elif name.endswith('.json'):
+            file_format = 'json'
+        else:
+            return Response({'error': 'Format non supporté. Utilisez CSV ou JSON.'}, status=status.HTTP_400_BAD_REQUEST)
 
-        try:
-            language = Language.objects.get(code=language_code)
-        except Language.DoesNotExist:
+        skip_duplicates = request.data.get('skip_duplicates', 'true') != 'false'
+
+        # Précharger toutes les langues pour éviter N+1 queries
+        lang_cache = {l.code: l for l in Language.objects.all()}
+
+        # Langue par défaut si la colonne source_language est absente
+        default_lang_code = request.data.get('language_code', 'french')
+        if default_lang_code not in lang_cache:
             return Response(
-                {'error': f"Language '{language_code}' not found."},
+                {'error': f"Langue '{default_lang_code}' introuvable."},
                 status=status.HTTP_404_NOT_FOUND,
             )
 
         try:
             with transaction.atomic():
                 if file_format == 'csv':
-                    result = self._import_csv(file, language, skip_duplicates)
+                    result = self._import_csv(file, lang_cache, default_lang_code, skip_duplicates)
                 else:
-                    result = self._import_json(file, language, skip_duplicates)
+                    result = self._import_json(file, lang_cache[default_lang_code], skip_duplicates)
         except Exception as e:
             logger.error(f"Dataset import failed: {e}")
             return Response({'error': 'Failed to import dataset.'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
-        msg = f'Successfully imported {result["imported_count"]} texts.'
+        msg = f'{result["imported_count"]} textes importés.'
         if result['duplicate_count']:
-            msg += f' {result["duplicate_count"]} duplicates skipped.'
+            msg += f' {result["duplicate_count"]} doublons ignorés.'
         logger.info(f"Dataset import: {result['imported_count']} texts by {request.user.username}")
-        return Response({**result, 'message': msg}, status=status.HTTP_201_CREATED)
+        return Response({**result, 'imported': result['imported_count'], 'message': msg}, status=status.HTTP_201_CREATED)
 
-    def _existing_hashes(self, language):
-        return {_text_hash(t) for t in TextDataset.objects.filter(language=language).values_list('text', flat=True)}
+    def _existing_hashes(self):
+        return {_text_hash(t) for t in TextDataset.objects.values_list('text', flat=True)}
 
-    def _import_csv(self, file, language, skip_duplicates):
-        import pandas as pd
+    def _import_csv(self, file, lang_cache, default_lang_code, skip_duplicates):
+        import csv as csv_mod
         imported_count = duplicate_count = 0
         errors = []
-        df = pd.read_csv(file)
-        if 'text' not in df.columns:
-            raise ValueError("CSV must contain 'text' column")
-        existing = self._existing_hashes(language) if skip_duplicates else set()
+        existing = self._existing_hashes() if skip_duplicates else set()
         seen = set()
-        for index, row in df.iterrows():
-            text = str(row['text']).strip()
+
+        content = file.read().decode('utf-8-sig')
+        reader = csv_mod.DictReader(content.splitlines())
+
+        if 'text' not in (reader.fieldnames or []):
+            raise ValueError("Le CSV doit contenir une colonne 'text'.")
+
+        has_source_lang = 'source_language' in (reader.fieldnames or [])
+        has_granularity = 'granularity' in (reader.fieldnames or [])
+        has_context = 'context' in (reader.fieldnames or [])
+        has_source = 'source' in (reader.fieldnames or [])
+
+        objects = []
+        for i, row in enumerate(reader):
+            text = (row.get('text') or '').strip()
             if not text or len(text) < 2:
-                errors.append(f"Ligne {index + 1}: Texte vide ou trop court")
+                errors.append(f"Ligne {i + 2}: texte vide ou trop court")
                 continue
             if len(text) > 5000:
-                errors.append(f"Ligne {index + 1}: Texte trop long (max 5000)")
+                errors.append(f"Ligne {i + 2}: texte trop long (max 5000)")
                 continue
+
             h = _text_hash(text)
             if skip_duplicates and (h in existing or h in seen):
                 duplicate_count += 1
                 continue
             seen.add(h)
-            tags = []
-            if 'tags' in df.columns and pd.notna(row.get('tags')):
-                tags = [t.strip() for t in str(row['tags']).split(',') if t.strip()]
-            for col, prefix in (('difficulty', 'difficulty'), ('domain', 'domain')):
-                if col in df.columns and pd.notna(row.get(col)):
-                    val = str(row[col]).strip().lower()
-                    if val:
-                        tags.append(f'{prefix}:{val}')
-            TextDataset.objects.create(text=text, language=language, tags=tags[:10])
-            imported_count += 1
+
+            lang_code = (row.get('source_language') or '').strip() if has_source_lang else default_lang_code
+            language = lang_cache.get(lang_code) or lang_cache.get(default_lang_code)
+            if not language:
+                errors.append(f"Ligne {i + 2}: langue '{lang_code}' inconnue")
+                continue
+
+            granularity = (row.get('granularity') or 'sentence').strip()
+            if granularity not in ('sentence', 'word'):
+                granularity = 'sentence'
+
+            context = (row.get('context') or '').strip() if has_context else ''
+            source_tag = (row.get('source') or '').strip() if has_source else ''
+            tags = [f'source:{source_tag}'] if source_tag else []
+
+            objects.append(TextDataset(
+                text=text,
+                language=language,
+                granularity=granularity,
+                context=context,
+                tags=tags,
+            ))
+
+        TextDataset.objects.bulk_create(objects, batch_size=500)
+        imported_count = len(objects)
         return {'imported_count': imported_count, 'duplicate_count': duplicate_count, 'errors': errors[:10]}
 
     def _import_json(self, file, language, skip_duplicates):
@@ -265,53 +387,38 @@ class DatasetImportView(APIView):
 
 
 class DatasetPreviewView(APIView):
-    """Preview first 5 rows of a file before importing. Admin only."""
+    """Preview first 10 rows of a CSV/JSON file before importing. Admin only."""
     permission_classes = [permissions.IsAuthenticated, IsAdmin]
 
     def post(self, request):
-        serializer = DatasetImportSerializer(data=request.data)
-        if not serializer.is_valid():
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        file = request.FILES.get('file')
+        if not file:
+            return Response({'error': 'Aucun fichier fourni.'}, status=status.HTTP_400_BAD_REQUEST)
+        if file.size > 10 * 1024 * 1024:
+            return Response({'error': 'Fichier trop volumineux (max 10 Mo).'}, status=status.HTTP_400_BAD_REQUEST)
 
-        file = serializer.validated_data['file']
-        file_format = serializer.validated_data['file_format']
-        preview, errors, total_items = [], [], 0
-
+        name = file.name.lower()
         try:
-            if file_format == 'csv':
-                import pandas as pd
-                df = pd.read_csv(file)
-                total_items = len(df)
-                if 'text' not in df.columns:
-                    errors.append("Missing required column 'text'")
-                for i, row in df.head(5).iterrows():
-                    text = str(row.get('text', ''))
-                    preview.append({
-                        'row': i + 1,
-                        'text': text[:200] + ('...' if len(text) > 200 else ''),
-                        'tags': str(row.get('tags', '')),
-                        'difficulty': str(row.get('difficulty', '')),
-                        'domain': str(row.get('domain', '')),
-                    })
-                return Response({'preview': preview, 'total_items': total_items,
-                                 'errors': errors, 'columns': list(df.columns)})
-            else:
+            if name.endswith('.csv'):
+                import csv as csv_mod
+                content = file.read().decode('utf-8-sig')
+                lines = content.splitlines()
+                reader = csv_mod.DictReader(lines)
+                all_rows = list(reader)
+                columns = reader.fieldnames or []
+                rows = [{k: (str(v) if v is not None else '') for k, v in row.items()} for row in all_rows[:10]]
+                return Response({'columns': list(columns), 'rows': rows, 'total_rows': len(all_rows)})
+            elif name.endswith('.json'):
                 data = json.load(file)
                 if not isinstance(data, list):
-                    errors.append("JSON must contain an array of objects")
-                else:
-                    total_items = len(data)
-                    for i, item in enumerate(data[:5]):
-                        if isinstance(item, dict):
-                            text = str(item.get('text', ''))
-                            preview.append({
-                                'row': i + 1,
-                                'text': text[:200] + ('...' if len(text) > 200 else ''),
-                                'tags': item.get('tags', []),
-                                'difficulty': str(item.get('difficulty', '')),
-                                'domain': str(item.get('domain', '')),
-                            })
-                return Response({'preview': preview, 'total_items': total_items, 'errors': errors})
+                    return Response({'error': 'Le JSON doit contenir un tableau d\'objets.'}, status=status.HTTP_400_BAD_REQUEST)
+                if not data:
+                    return Response({'error': 'Fichier JSON vide.'}, status=status.HTTP_400_BAD_REQUEST)
+                columns = list(data[0].keys()) if isinstance(data[0], dict) else ['value']
+                rows = [{k: str(v) for k, v in item.items()} for item in data[:10] if isinstance(item, dict)]
+                return Response({'columns': columns, 'rows': rows, 'total_rows': len(data)})
+            else:
+                return Response({'error': 'Format non supporté. Utilisez CSV ou JSON.'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
