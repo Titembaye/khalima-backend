@@ -23,5 +23,5 @@ class Command(BaseCommand):
             )
             return
 
-        User.objects.create_superuser(email=email, password=password)
+        User.objects.create_superuser(username=email, email=email, password=password)
         self.stdout.write(self.style.SUCCESS(f'Superuser created: {email}'))
