@@ -3,11 +3,7 @@ from decouple import config
 
 DEBUG = False
 
-ALLOWED_HOSTS = config(
-    'ALLOWED_HOSTS',
-    default='.onrender.com',
-    cast=lambda v: [s.strip() for s in v.split(',')],
-)
+ALLOWED_HOSTS = ['*']  # TODO: restreindre après validation
 
 MIDDLEWARE = [
     'corsheaders.middleware.CorsMiddleware',
